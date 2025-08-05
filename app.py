@@ -1,73 +1,407 @@
 
 import fitz
-import streamlit as st # type: ignore
-import spacy # type: ignore
-
-# app.py
+import streamlit as st
+import spacy
 import io
-# Import necessary libraries
 import os
+import docx
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+import time
 
 # Load OpenAI API key from environment variable or set it here (not recommended for production)
 # For production, set this as an environment variable: export OPENAI_API_KEY="your_api_key"
 if "OPENAI_API_KEY" not in os.environ:
     os.environ["OPENAI_API_KEY"] = "YOUR_OPENAI_API_KEY"  # Replace with your OpenAI API key or use environment variable
+
 # Ensure the necessary models are downloaded
-if not os.path.exists("en_core_web_sm"):
-    import spacy.cli # type: ignore
-    spacy.cli.download("en_core_web_sm")        
+@st.cache_resource
+def load_spacy_model():
+    try:
+        nlp = spacy.load("en_core_web_sm")
+    except OSError:
+        st.warning("Downloading spaCy model... This may take a moment.")
+        import spacy.cli
+        spacy.cli.download("en_core_web_sm")
+        nlp = spacy.load("en_core_web_sm")
+    return nlp
 
-st.set_page_config(page_title="AI Resume Grader", layout="wide")
-st.title("🧾 AI Resume Grader")
+# Page configuration
+st.set_page_config(
+    page_title="AI Resume Grader",
+    page_icon="🧾",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-st.markdown("Upload your resume and job description to get a skill match score.")
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .score-card {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .score-number {
+        font-size: 3rem;
+        font-weight: bold;
+        margin: 0;
+    }
+    .upload-section {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border: 2px dashed #dee2e6;
+        margin: 1rem 0;
+    }
+    .keyword-match {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 5px;
+        padding: 0.5rem;
+        margin: 0.2rem;
+        display: inline-block;
+    }
+    .keyword-missing {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 5px;
+        padding: 0.5rem;
+        margin: 0.2rem;
+        display: inline-block;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-uploaded_resume = st.file_uploader("Upload Resume (PDF or TXT)", type=["pdf", "txt"])
-job_description = st.text_area("Paste Job Description")
+# Sidebar
+with st.sidebar:
+    st.header("📊 Analysis Options")
+    
+    analysis_type = st.selectbox(
+        "Analysis Depth",
+        ["Basic", "Advanced", "Detailed"],
+        help="Choose the level of analysis detail"
+    )
+    
+    min_keyword_length = st.slider(
+        "Minimum Keyword Length",
+        min_value=2,
+        max_value=6,
+        value=3,
+        help="Minimum length for keywords to be considered"
+    )
+    
+    show_missing_keywords = st.checkbox(
+        "Show Missing Keywords",
+        value=True,
+        help="Display keywords found in job description but not in resume"
+    )
+    
+    st.markdown("---")
+    st.markdown("### 📁 Supported Formats")
+    st.markdown("- 📄 PDF files")
+    st.markdown("- 📝 Text files (.txt)")
+    st.markdown("- 📘 Word documents (.docx)")
 
-def extract_keywords(doc):
-    return set([
-        token.lemma_.lower() for token in doc
-        if not token.is_stop
-        and not token.is_punct
-        and not token.like_num
-        and len(token.lemma_) > 2
-        and token.is_alpha
-    ])
+# Main content
+st.markdown('<h1 class="main-header">🧾 AI Resume Grader</h1>', unsafe_allow_html=True)
+
+st.markdown("""
+<div style='text-align: center; margin-bottom: 2rem; font-size: 1.2rem; color: #666;'>
+    Upload your resume and job description to get an intelligent skill match analysis
+</div>
+""", unsafe_allow_html=True)
+
+# Create two columns for better layout
+col1, col2 = st.columns([1, 1], gap="large")
 
 def extract_text_from_pdf(file):
+    """Extract text from PDF file"""
     text = ""
     try:
-        with fitz.open(stream=file.read(), filetype="pdf") as doc:
+        file_bytes = file.read()
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page in doc:
                 text += page.get_text()
     except Exception as e:
         st.error(f"Failed to read PDF: {e}")
     return text
 
+def extract_text_from_docx(file):
+    """Extract text from DOCX file"""
+    text = ""
+    try:
+        doc = docx.Document(file)
+        for paragraph in doc.paragraphs:
+            text += paragraph.text + "\n"
+    except Exception as e:
+        st.error(f"Failed to read DOCX: {e}")
+    return text
+
+def extract_text_from_txt(file):
+    """Extract text from TXT file"""
+    try:
+        return file.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        st.error(f"Failed to read TXT: {e}")
+        return ""
+
+def extract_keywords(doc, min_length=3):
+    """Extract keywords from spaCy doc with improved filtering"""
+    keywords = set()
+    for token in doc:
+        if (not token.is_stop 
+            and not token.is_punct 
+            and not token.like_num 
+            and len(token.lemma_) >= min_length
+            and token.is_alpha
+            and not token.is_space):
+            keywords.add(token.lemma_.lower())
+    return keywords
+
+def get_file_info(file):
+    """Get file information for display"""
+    if file:
+        return {
+            "name": file.name,
+            "size": f"{file.size / 1024:.1f} KB",
+            "type": file.type
+        }
+    return None
+
+def create_score_visualization(score):
+    """Create a gauge chart for the score"""
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number+delta",
+        value = score,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': "Match Score"},
+        delta = {'reference': 70, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
+        gauge = {
+            'axis': {'range': [None, 100]},
+            'bar': {'color': "darkblue"},
+            'steps': [
+                {'range': [0, 50], 'color': "lightgray"},
+                {'range': [50, 80], 'color': "yellow"},
+                {'range': [80, 100], 'color': "green"}],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 90}}))
+    
+    fig.update_layout(height=300, showlegend=False)
+    return fig
+
+# Resume Upload Section
+with col1:
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+    st.markdown("### 📄 Upload Resume")
+    
+    uploaded_resume = st.file_uploader(
+        "Choose your resume file",
+        type=["pdf", "txt", "docx"],
+        help="Supported formats: PDF, TXT, DOCX",
+        label_visibility="collapsed"
+    )
+    
+    if uploaded_resume:
+        file_info = get_file_info(uploaded_resume)
+        st.success(f"✅ Uploaded: {file_info['name']} ({file_info['size']})")
+        
+        # Show file preview option
+        if st.checkbox("📖 Preview uploaded file"):
+            with st.expander("File Preview"):
+                if uploaded_resume.type == "application/pdf":
+                    preview_text = extract_text_from_pdf(uploaded_resume)
+                elif uploaded_resume.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    preview_text = extract_text_from_docx(uploaded_resume)
+                else:
+                    preview_text = extract_text_from_txt(uploaded_resume)
+                
+                st.text_area("File Content Preview", preview_text[:500] + "..." if len(preview_text) > 500 else preview_text, height=200)
+    else:
+        st.info("👆 Please upload your resume to get started")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Job Description Section
+with col2:
+    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
+    st.markdown("### 💼 Job Description")
+    
+    job_description = st.text_area(
+        "Paste the job description here",
+        height=200,
+        placeholder="Copy and paste the job description you want to match against...",
+        label_visibility="collapsed"
+    )
+    
+    if job_description:
+        word_count = len(job_description.split())
+        st.success(f"✅ Job description entered ({word_count} words)")
+    else:
+        st.info("👆 Please enter the job description")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Analysis Section
 if uploaded_resume and job_description:
-    nlp = spacy.load("en_core_web_sm")
-
-    if uploaded_resume.type == "application/pdf":
-        resume_text = extract_text_from_pdf(uploaded_resume)
-    else:
-        resume_text = uploaded_resume.read().decode("utf-8", errors="ignore")
-
-    if not resume_text.strip():
-        st.warning("Could not extract text from the resume. Please try a different file.")
-    else:
-        resume_doc = nlp(resume_text.lower())
-        jd_doc = nlp(job_description.lower())
-
-        resume_tokens = extract_keywords(resume_doc)
-        jd_tokens = extract_keywords(jd_doc)
-
-        matched = resume_tokens.intersection(jd_tokens)
-        match_score = round(len(matched) / len(jd_tokens) * 100, 2) if jd_tokens else 0.0
-
-        st.markdown(f"### ✅ Skill Match Score: {match_score}%")
-        if matched:
-            st.markdown("#### ✅ Matched Keywords:")
-            st.write(", ".join(sorted(matched)))
+    st.markdown("---")
+    st.markdown("## 🔍 Analysis Results")
+    
+    # Load spaCy model
+    with st.spinner("🧠 Loading AI model..."):
+        nlp = load_spacy_model()
+    
+    # Process uploaded file
+    with st.spinner("📖 Processing your resume..."):
+        if uploaded_resume.type == "application/pdf":
+            resume_text = extract_text_from_pdf(uploaded_resume)
+        elif uploaded_resume.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            resume_text = extract_text_from_docx(uploaded_resume)
         else:
-            st.warning("No matching keywords found.")
+            resume_text = extract_text_from_txt(uploaded_resume)
+    
+    if not resume_text.strip():
+        st.error("❌ Could not extract text from the resume. Please try a different file.")
+    else:
+        # Analyze text
+        with st.spinner("🔬 Analyzing skill match..."):
+            resume_doc = nlp(resume_text.lower())
+            jd_doc = nlp(job_description.lower())
+            
+            resume_keywords = extract_keywords(resume_doc, min_keyword_length)
+            jd_keywords = extract_keywords(jd_doc, min_keyword_length)
+            
+            matched_keywords = resume_keywords.intersection(jd_keywords)
+            missing_keywords = jd_keywords - resume_keywords
+            
+            match_score = round(len(matched_keywords) / len(jd_keywords) * 100, 2) if jd_keywords else 0.0
+        
+        # Results Layout
+        result_col1, result_col2 = st.columns([1, 1])
+        
+        with result_col1:
+            # Score Display
+            st.plotly_chart(create_score_visualization(match_score), use_container_width=True)
+            
+            # Statistics
+            st.markdown("### 📊 Statistics")
+            stats_df = pd.DataFrame([
+                ["Resume Keywords", len(resume_keywords)],
+                ["Job Requirements", len(jd_keywords)],
+                ["Matched Keywords", len(matched_keywords)],
+                ["Missing Keywords", len(missing_keywords)]
+            ], columns=["Metric", "Count"])
+            
+            st.dataframe(stats_df, use_container_width=True, hide_index=True)
+        
+        with result_col2:
+            # Score interpretation
+            st.markdown("### 🎯 Score Interpretation")
+            if match_score >= 80:
+                st.success("🌟 Excellent match! Your resume aligns well with the job requirements.")
+            elif match_score >= 60:
+                st.warning("✨ Good match! Consider adding a few more relevant keywords.")
+            elif match_score >= 40:
+                st.warning("💡 Fair match. Your resume could benefit from more relevant keywords.")
+            else:
+                st.error("🔄 Low match. Consider significantly updating your resume to better align with the job requirements.")
+        
+        # Detailed Analysis
+        st.markdown("---")
+        analysis_col1, analysis_col2 = st.columns([1, 1])
+        
+        with analysis_col1:
+            if matched_keywords:
+                st.markdown("### ✅ Matched Keywords")
+                matched_list = sorted(list(matched_keywords))
+                
+                # Display as badges
+                keyword_html = ""
+                for keyword in matched_list:
+                    keyword_html += f'<span class="keyword-match">{keyword}</span> '
+                st.markdown(keyword_html, unsafe_allow_html=True)
+                
+                # Download option
+                if st.button("📥 Download Matched Keywords"):
+                    matched_df = pd.DataFrame(matched_list, columns=["Matched Keywords"])
+                    csv = matched_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name=f"matched_keywords_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv"
+                    )
+            else:
+                st.warning("❌ No matching keywords found.")
+        
+        with analysis_col2:
+            if show_missing_keywords and missing_keywords:
+                st.markdown("### ❌ Missing Keywords")
+                missing_list = sorted(list(missing_keywords))
+                
+                # Display as badges
+                keyword_html = ""
+                for keyword in missing_list[:20]:  # Limit to first 20
+                    keyword_html += f'<span class="keyword-missing">{keyword}</span> '
+                
+                if len(missing_list) > 20:
+                    keyword_html += f'<br><small>... and {len(missing_list) - 20} more</small>'
+                
+                st.markdown(keyword_html, unsafe_allow_html=True)
+                
+                st.info("💡 Consider adding these keywords to improve your match score!")
+        
+        # Advanced Analysis
+        if analysis_type in ["Advanced", "Detailed"]:
+            st.markdown("---")
+            st.markdown("### 🔬 Advanced Analysis")
+            
+            # Keyword frequency analysis
+            if analysis_type == "Detailed":
+                freq_col1, freq_col2 = st.columns([1, 1])
+                
+                with freq_col1:
+                    st.markdown("#### Top Resume Keywords")
+                    resume_freq = {}
+                    for token in resume_doc:
+                        if token.lemma_.lower() in resume_keywords:
+                            resume_freq[token.lemma_.lower()] = resume_freq.get(token.lemma_.lower(), 0) + 1
+                    
+                    if resume_freq:
+                        top_resume = sorted(resume_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+                        resume_df = pd.DataFrame(top_resume, columns=["Keyword", "Frequency"])
+                        st.dataframe(resume_df, use_container_width=True, hide_index=True)
+                
+                with freq_col2:
+                    st.markdown("#### Top Job Requirements")
+                    jd_freq = {}
+                    for token in jd_doc:
+                        if token.lemma_.lower() in jd_keywords:
+                            jd_freq[token.lemma_.lower()] = jd_freq.get(token.lemma_.lower(), 0) + 1
+                    
+                    if jd_freq:
+                        top_jd = sorted(jd_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+                        jd_df = pd.DataFrame(top_jd, columns=["Keyword", "Frequency"])
+                        st.dataframe(jd_df, use_container_width=True, hide_index=True)
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #666; margin-top: 2rem;'>
+    Made with ❤️ using Streamlit and spaCy | 
+    <a href="https://github.com/jainamshah2028/ai-resume-grader" target="_blank">View on GitHub</a>
+</div>
+""", unsafe_allow_html=True)
