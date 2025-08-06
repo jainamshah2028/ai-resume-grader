@@ -1,32 +1,46 @@
 
-import fitz
 import streamlit as st
-import spacy
-import io
-import os
-import docx
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-import time
+import os
+import io
+
+# Lazy imports for better performance
+@st.cache_resource
+def load_dependencies():
+    """Load heavy dependencies only when needed"""
+    try:
+        import fitz
+        import spacy
+        import docx
+        return fitz, spacy, docx
+    except ImportError as e:
+        st.error(f"Missing dependency: {e}. Please install required packages.")
+        return None, None, None
 
 # Load OpenAI API key from environment variable or set it here (not recommended for production)
-# For production, set this as an environment variable: export OPENAI_API_KEY="your_api_key"
 if "OPENAI_API_KEY" not in os.environ:
-    os.environ["OPENAI_API_KEY"] = "YOUR_OPENAI_API_KEY"  # Replace with your OpenAI API key or use environment variable
+    os.environ["OPENAI_API_KEY"] = ""  # Replace with your OpenAI API key or use environment variable
 
-# Ensure the necessary models are downloaded
+# Optimized spaCy model loading with better caching
 @st.cache_resource
 def load_spacy_model():
+    """Load spaCy model with optimized settings for speed"""
     try:
-        nlp = spacy.load("en_core_web_sm")
+        _, spacy, _ = load_dependencies()
+        if spacy is None:
+            return None
+        
+        # Load model with only essential components for speed
+        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        return nlp
     except OSError:
-        st.warning("Downloading spaCy model... This may take a moment.")
-        import spacy.cli
-        spacy.cli.download("en_core_web_sm")
-        nlp = spacy.load("en_core_web_sm")
-    return nlp
+        st.error("⚠️ spaCy model not found. Please install it by running: python -m spacy download en_core_web_sm")
+        return None
+    except Exception as e:
+        st.error(f"Error loading spaCy model: {e}")
+        return None
 
 # Page configuration
 st.set_page_config(
@@ -35,6 +49,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize session state for better performance
+if 'processed_resume' not in st.session_state:
+    st.session_state.processed_resume = None
+if 'processed_jd' not in st.session_state:
+    st.session_state.processed_jd = None
+if 'last_resume_hash' not in st.session_state:
+    st.session_state.last_resume_hash = None
+if 'last_jd_hash' not in st.session_state:
+    st.session_state.last_jd_hash = None
 
 # Custom CSS for better styling
 st.markdown("""
@@ -126,11 +150,16 @@ st.markdown("""
 # Create two columns for better layout
 col1, col2 = st.columns([1, 1], gap="large")
 
-def extract_text_from_pdf(file):
-    """Extract text from PDF file"""
+# Optimized text extraction functions with caching
+@st.cache_data
+def extract_text_from_pdf(file_bytes, file_name):
+    """Extract text from PDF file with caching"""
+    fitz, _, _ = load_dependencies()
+    if fitz is None:
+        return ""
+    
     text = ""
     try:
-        file_bytes = file.read()
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for page in doc:
                 text += page.get_text()
@@ -138,27 +167,58 @@ def extract_text_from_pdf(file):
         st.error(f"Failed to read PDF: {e}")
     return text
 
-def extract_text_from_docx(file):
-    """Extract text from DOCX file"""
+@st.cache_data
+def extract_text_from_docx(file_bytes, file_name):
+    """Extract text from DOCX file with caching"""
+    _, _, docx = load_dependencies()
+    if docx is None:
+        return ""
+    
     text = ""
     try:
-        doc = docx.Document(file)
+        doc = docx.Document(io.BytesIO(file_bytes))
         for paragraph in doc.paragraphs:
             text += paragraph.text + "\n"
     except Exception as e:
         st.error(f"Failed to read DOCX: {e}")
     return text
 
-def extract_text_from_txt(file):
-    """Extract text from TXT file"""
+@st.cache_data
+def extract_text_from_txt(file_bytes, file_name):
+    """Extract text from TXT file with caching"""
     try:
-        return file.read().decode("utf-8", errors="ignore")
+        return file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
         st.error(f"Failed to read TXT: {e}")
         return ""
 
+# Optimized keyword extraction with caching
+@st.cache_data
+def extract_keywords_cached(text, min_length=3):
+    """Extract keywords with caching for better performance"""
+    nlp = load_spacy_model()
+    if nlp is None:
+        # Fallback to simple word extraction if spaCy fails
+        import re
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', text.lower())
+        # Simple stopword removal
+        stopwords = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}
+        return set(word for word in words if len(word) >= min_length and word not in stopwords)
+    
+    doc = nlp(text.lower())
+    keywords = set()
+    for token in doc:
+        if (not token.is_stop 
+            and not token.is_punct 
+            and not token.like_num 
+            and len(token.lemma_) >= min_length
+            and token.is_alpha
+            and not token.is_space):
+            keywords.add(token.lemma_.lower())
+    return keywords
+
 def extract_keywords(doc, min_length=3):
-    """Extract keywords from spaCy doc with improved filtering"""
+    """Legacy function for compatibility"""
     keywords = set()
     for token in doc:
         if (not token.is_stop 
@@ -181,15 +241,17 @@ def get_file_info(file):
     return None
 
 def create_score_visualization(score):
-    """Create a gauge chart for the score"""
-    fig = go.Figure(go.Indicator(
-        mode = "gauge+number+delta",
+    """Create a simple, fast gauge chart for the score"""
+    # Simplified gauge for better performance
+    fig = go.Figure()
+    
+    fig.add_trace(go.Indicator(
+        mode = "gauge+number",
         value = score,
+        title = {'text': "Match Score %"},
         domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "Match Score"},
-        delta = {'reference': 70, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
         gauge = {
-            'axis': {'range': [None, 100]},
+            'axis': {'range': [None, 100], 'tickwidth': 1},
             'bar': {'color': "darkblue"},
             'steps': [
                 {'range': [0, 50], 'color': "lightgray"},
@@ -200,8 +262,13 @@ def create_score_visualization(score):
                 'thickness': 0.75,
                 'value': 90}}))
     
-    fig.update_layout(height=300, showlegend=False)
+    fig.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20))
     return fig
+
+def get_text_hash(text):
+    """Generate hash for text to check if it changed"""
+    import hashlib
+    return hashlib.md5(text.encode()).hexdigest()
 
 # Resume Upload Section
 with col1:
@@ -219,17 +286,30 @@ with col1:
         file_info = get_file_info(uploaded_resume)
         st.success(f"✅ Uploaded: {file_info['name']} ({file_info['size']})")
         
+        # Process file immediately and cache result
+        file_bytes = uploaded_resume.read()
+        file_hash = get_text_hash(file_bytes.decode('utf-8', errors='ignore') if uploaded_resume.type == 'text/plain' else str(file_bytes))
+        
+        # Only reprocess if file changed
+        if st.session_state.last_resume_hash != file_hash:
+            with st.spinner("📖 Processing resume..."):
+                if uploaded_resume.type == "application/pdf":
+                    resume_text = extract_text_from_pdf(file_bytes, uploaded_resume.name)
+                elif uploaded_resume.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    resume_text = extract_text_from_docx(file_bytes, uploaded_resume.name)
+                else:
+                    resume_text = extract_text_from_txt(file_bytes, uploaded_resume.name)
+                
+                st.session_state.processed_resume = resume_text
+                st.session_state.last_resume_hash = file_hash
+        
         # Show file preview option
         if st.checkbox("📖 Preview uploaded file"):
             with st.expander("File Preview"):
-                if uploaded_resume.type == "application/pdf":
-                    preview_text = extract_text_from_pdf(uploaded_resume)
-                elif uploaded_resume.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                    preview_text = extract_text_from_docx(uploaded_resume)
-                else:
-                    preview_text = extract_text_from_txt(uploaded_resume)
-                
-                st.text_area("File Content Preview", preview_text[:500] + "..." if len(preview_text) > 500 else preview_text, height=200)
+                preview_text = st.session_state.processed_resume or "Processing..."
+                st.text_area("File Content Preview", 
+                           preview_text[:500] + "..." if len(preview_text) > 500 else preview_text, 
+                           height=200, disabled=True)
     else:
         st.info("👆 Please upload your resume to get started")
     
@@ -250,39 +330,34 @@ with col2:
     if job_description:
         word_count = len(job_description.split())
         st.success(f"✅ Job description entered ({word_count} words)")
+        
+        # Process job description and cache
+        jd_hash = get_text_hash(job_description)
+        if st.session_state.last_jd_hash != jd_hash:
+            st.session_state.processed_jd = job_description
+            st.session_state.last_jd_hash = jd_hash
     else:
         st.info("👆 Please enter the job description")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Analysis Section
-if uploaded_resume and job_description:
+# Analysis Section - Only show if both inputs are ready
+if uploaded_resume and job_description and st.session_state.processed_resume and st.session_state.processed_jd:
     st.markdown("---")
     st.markdown("## 🔍 Analysis Results")
     
-    # Load spaCy model
-    with st.spinner("🧠 Loading AI model..."):
-        nlp = load_spacy_model()
-    
-    # Process uploaded file
-    with st.spinner("📖 Processing your resume..."):
-        if uploaded_resume.type == "application/pdf":
-            resume_text = extract_text_from_pdf(uploaded_resume)
-        elif uploaded_resume.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            resume_text = extract_text_from_docx(uploaded_resume)
-        else:
-            resume_text = extract_text_from_txt(uploaded_resume)
+    # Use cached/processed data
+    resume_text = st.session_state.processed_resume
+    job_desc_text = st.session_state.processed_jd
     
     if not resume_text.strip():
         st.error("❌ Could not extract text from the resume. Please try a different file.")
     else:
-        # Analyze text
+        # Fast keyword extraction using cached function
         with st.spinner("🔬 Analyzing skill match..."):
-            resume_doc = nlp(resume_text.lower())
-            jd_doc = nlp(job_description.lower())
-            
-            resume_keywords = extract_keywords(resume_doc, min_keyword_length)
-            jd_keywords = extract_keywords(jd_doc, min_keyword_length)
+            # Use optimized keyword extraction
+            resume_keywords = extract_keywords_cached(resume_text, min_keyword_length)
+            jd_keywords = extract_keywords_cached(job_desc_text, min_keyword_length)
             
             matched_keywords = resume_keywords.intersection(jd_keywords)
             missing_keywords = jd_keywords - resume_keywords
@@ -364,21 +439,24 @@ if uploaded_resume and job_description:
                 
                 st.info("💡 Consider adding these keywords to improve your match score!")
         
-        # Advanced Analysis
+        # Advanced Analysis (simplified for performance)
         if analysis_type in ["Advanced", "Detailed"]:
             st.markdown("---")
             st.markdown("### 🔬 Advanced Analysis")
             
-            # Keyword frequency analysis
+            # Simplified keyword frequency analysis
             if analysis_type == "Detailed":
                 freq_col1, freq_col2 = st.columns([1, 1])
                 
                 with freq_col1:
                     st.markdown("#### Top Resume Keywords")
+                    # Simple frequency count without spaCy processing
+                    resume_words = resume_text.lower().split()
                     resume_freq = {}
-                    for token in resume_doc:
-                        if token.lemma_.lower() in resume_keywords:
-                            resume_freq[token.lemma_.lower()] = resume_freq.get(token.lemma_.lower(), 0) + 1
+                    for word in resume_words:
+                        clean_word = ''.join(c for c in word if c.isalpha())
+                        if clean_word in resume_keywords:
+                            resume_freq[clean_word] = resume_freq.get(clean_word, 0) + 1
                     
                     if resume_freq:
                         top_resume = sorted(resume_freq.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -387,15 +465,21 @@ if uploaded_resume and job_description:
                 
                 with freq_col2:
                     st.markdown("#### Top Job Requirements")
+                    # Simple frequency count without spaCy processing
+                    jd_words = job_desc_text.lower().split()
                     jd_freq = {}
-                    for token in jd_doc:
-                        if token.lemma_.lower() in jd_keywords:
-                            jd_freq[token.lemma_.lower()] = jd_freq.get(token.lemma_.lower(), 0) + 1
+                    for word in jd_words:
+                        clean_word = ''.join(c for c in word if c.isalpha())
+                        if clean_word in jd_keywords:
+                            jd_freq[clean_word] = jd_freq.get(clean_word, 0) + 1
                     
                     if jd_freq:
                         top_jd = sorted(jd_freq.items(), key=lambda x: x[1], reverse=True)[:10]
                         jd_df = pd.DataFrame(top_jd, columns=["Keyword", "Frequency"])
                         st.dataframe(jd_df, use_container_width=True, hide_index=True)
+
+elif uploaded_resume or job_description:
+    st.info("📋 Please upload both a resume and enter a job description to see the analysis.")
 
 # Footer
 st.markdown("---")
