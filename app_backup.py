@@ -91,34 +91,11 @@ st.markdown("""
     }
     
     .upload-section {
+        background: #f8f9fa;
         padding: 1.5rem;
-        border-radius: 15px;
+        border-radius: 10px;
         margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-        color: white;
-    }
-    
-    .upload-section.resume {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border: 2px solid rgba(102, 126, 234, 0.3);
-    }
-    
-    .upload-section.job-desc {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        border: 2px solid rgba(245, 87, 108, 0.3);
-    }
-    
-    .upload-section h3 {
-        color: white !important;
-        margin-bottom: 0.5rem !important;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-        font-weight: 600;
-    }
-    
-    .upload-section p {
-        color: rgba(255, 255, 255, 0.9) !important;
-        margin: 0 !important;
-        font-weight: 500;
+        border: 1px solid #dee2e6;
     }
     
     .keyword-match {
@@ -595,7 +572,7 @@ def suggest_projects_for_skills(missing_skills):
 # Resume Upload Section
 with col1:
     st.markdown("""
-    <div class="upload-section resume">
+    <div class="upload-section">
         <h3>📄 Upload Resume</h3>
         <p>Supported: PDF, DOCX, TXT (Max 10MB)</p>
     </div>
@@ -698,7 +675,7 @@ with col1:
 # Job Description Section
 with col2:
     st.markdown("""
-    <div class="upload-section job-desc">
+    <div class="upload-section">
         <h3>💼 Job Description</h3>
         <p>Paste the complete job posting for analysis</p>
     </div>
@@ -1030,7 +1007,7 @@ if uploaded_resume and job_description and st.session_state.processed_resume and
         with analysis_col1:
             if matched_keywords:
                 # Keywords overview with expand/collapse control
-                st.markdown(f"""
+                st.markdown("""
                 <div style='background: linear-gradient(135deg, rgba(40, 167, 69, 0.15) 0%, rgba(40, 167, 69, 0.05) 100%); 
                             padding: 1.5rem; border-radius: 15px; margin: 1.5rem 0; 
                             border: 1px solid rgba(40, 167, 69, 0.2);'>
@@ -1047,7 +1024,7 @@ if uploaded_resume and job_description and st.session_state.processed_resume and
                         Skills from your resume that align with job requirements
                     </p>
                 </div>
-                """, unsafe_allow_html=True)
+                """.format(len=len), unsafe_allow_html=True)
                 
                 matched_list = sorted(list(matched_keywords))
                 
@@ -1143,7 +1120,7 @@ CAREER LEVEL: {career_level}
         with analysis_col2:
             if show_missing_keywords and missing_keywords:
                 # Missing keywords overview with expand/collapse control
-                st.markdown(f"""
+                st.markdown("""
                 <div style='background: linear-gradient(135deg, rgba(220, 53, 69, 0.15) 0%, rgba(220, 53, 69, 0.05) 100%); 
                             padding: 1.5rem; border-radius: 15px; margin: 1.5rem 0; 
                             border: 1px solid rgba(220, 53, 69, 0.2);'>
@@ -1160,7 +1137,7 @@ CAREER LEVEL: {career_level}
                         Consider strengthening these skills to improve your match score
                     </p>
                 </div>
-                """, unsafe_allow_html=True)
+                """.format(len=len), unsafe_allow_html=True)
                 
                 missing_list = sorted(list(missing_keywords))
                 
@@ -1431,33 +1408,50 @@ elif uploaded_resume or job_description:
 
 # Enhanced Footer
 st.markdown("---")
-
-# Create footer using native Streamlit components for better reliability
-st.markdown("### 🧾 AI Resume Grader")
-st.markdown("*Helping job seekers optimize their resumes with AI-powered analysis*")
-
-# Features grid using columns
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.markdown("📊")
-    st.markdown("**Smart Analysis**")
-    st.markdown("*AI-powered keyword matching*")
-
-with col2:
-    st.markdown("🎓")
-    st.markdown("**Student Friendly**")
-    st.markdown("*Special features for freshers*")
-
-with col3:
-    st.markdown("🚀")
-    st.markdown("**Career Growth**")
-    st.markdown("*Learning recommendations*")
-
-with col4:
-    st.markdown("📥")
-    st.markdown("**Export Results**")
-    st.markdown("*Download analysis reports*")
-
-st.markdown("---")
-st.markdown("Made with ❤️ using Streamlit, spaCy, and Plotly | [View on GitHub](https://github.com/jainamshah2028/ai-resume-grader) | Version 2.0")
+st.markdown("""
+<div style='margin-top: 3rem; padding: 2rem; 
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%); 
+            color: white; border-radius: 20px; text-align: center;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);'>
+    <div style='margin-bottom: 1.5rem;'>
+        <h3 style='margin: 0 0 0.5rem 0; font-weight: 600;'>🧾 AI Resume Grader</h3>
+        <p style='margin: 0; opacity: 0.9; font-size: 0.95rem;'>
+            Helping job seekers optimize their resumes with AI-powered analysis
+        </p>
+    </div>
+    
+    <div style='display: flex; justify-content: center; gap: 2rem; margin: 1.5rem 0; flex-wrap: wrap;'>
+        <div style='text-align: center;'>
+            <div style='font-size: 1.5rem; margin-bottom: 0.5rem;'>📊</div>
+            <strong>Smart Analysis</strong><br>
+            <small style='opacity: 0.8;'>AI-powered keyword matching</small>
+        </div>
+        <div style='text-align: center;'>
+            <div style='font-size: 1.5rem; margin-bottom: 0.5rem;'>🎓</div>
+            <strong>Student Friendly</strong><br>
+            <small style='opacity: 0.8;'>Special features for freshers</small>
+        </div>
+        <div style='text-align: center;'>
+            <div style='font-size: 1.5rem; margin-bottom: 0.5rem;'>🚀</div>
+            <strong>Career Growth</strong><br>
+            <small style='opacity: 0.8;'>Learning recommendations</small>
+        </div>
+        <div style='text-align: center;'>
+            <div style='font-size: 1.5rem; margin-bottom: 0.5rem;'>📥</div>
+            <strong>Export Results</strong><br>
+            <small style='opacity: 0.8;'>Download analysis reports</small>
+        </div>
+    </div>
+    
+    <div style='border-top: 1px solid rgba(255,255,255,0.2); padding-top: 1rem; margin-top: 1rem;'>
+        <p style='margin: 0; font-size: 0.9rem; opacity: 0.8;'>
+            Made with ❤️ using Streamlit, spaCy, and Plotly | 
+            <a href="https://github.com/jainamshah2028/ai-resume-grader" target="_blank" 
+               style='color: #74b9ff; text-decoration: none;'>
+                View on GitHub
+            </a> | 
+            Version 2.0
+        </p>
+    </div>
+</div>
+""", unsafe_allow_html=True)
