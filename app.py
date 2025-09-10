@@ -45,20 +45,39 @@ if "OPENAI_API_KEY" not in os.environ:
 # Optimized spaCy model loading with better caching
 @st.cache_resource
 def load_spacy_model():
-    """Load spaCy model with optimized settings for speed"""
+    """Load spaCy model with fallback options for deployment"""
     try:
         _, spacy, _ = load_dependencies()
         if spacy is None:
             return None
         
-        # Load model with only essential components for speed
-        nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-        return nlp
-    except OSError:
-        st.error("⚠️ spaCy model not found. Please install it by running: python -m spacy download en_core_web_sm")
-        return None
+        # Try to load the model with different approaches
+        try:
+            # First attempt: load installed model
+            nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+            return nlp
+        except OSError:
+            # Second attempt: download and load model
+            try:
+                import subprocess
+                subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True, capture_output=True)
+                nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+                return nlp
+            except:
+                # Third attempt: use blank model as fallback
+                st.warning("⚠️ Using basic English model. Some features may be limited.")
+                nlp = spacy.blank("en")
+                return nlp
+                
     except Exception as e:
         st.error(f"Error loading spaCy model: {e}")
+        # Fallback to basic model
+        try:
+            _, spacy, _ = load_dependencies()
+            if spacy:
+                return spacy.blank("en")
+        except:
+            pass
         return None
 
 # Page configuration
